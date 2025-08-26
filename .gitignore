@@ -105,3 +105,6 @@ dist
 
 db/
 wallet/
+
+# personal shell configs
+.bash_profile
