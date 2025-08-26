@@ -1,53 +1,78 @@
+"use strict";
 
-'use strict';
+const logger = require("../logger");
+const nopt = require("nopt");
 
-let logger = require('../logger');
+// use undici (fast native) or node-fetch if you prefer
+const { request } = require("undici");
 
 function Block(options) {
-    this.options = options;
+  this.options = options;
 }
 
 Block.DETAILS = {
-    alias: 'b',
-    description: 'block',
-    commands: ['get', 'all'],
-    options: {
-        create: Boolean
-    },
-    shorthands: {
-        s: ['--get'],
-        a: ['--all']
-    },
-    payload: function(payload, options) {
-        options.start = true;
-    },
+  alias: "b",
+  description: "block operations",
+  commands: ["get", "all"],
+  options: {
+    get: Boolean, // --get
+    all: Boolean, // --all
+    port: Number, // --port <number>
+    index: Number, // --index <number>
+  },
+  shorthands: {
+    g: ["--get"],
+    a: ["--all"],
+    p: ["--port"],
+    i: ["--index"],
+  },
+  payload: function (payload, options) {
+    // allow: cli block --get --index 1 --port 8080
+    // no positional hacks
+  },
 };
 
-Block.prototype.run = function() {
-    let instance = this,
-        options = instance.options;
+async function httpJson(url) {
+  const res = await request(url, { method: "GET" });
+  const text = await res.body.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
 
-    // console.log('---> blocks: ' + JSON.stringify(options.argv.original[2]));
+Block.prototype.run = async function () {
+  const options = this.options;
+  const port = Number(options.port || process.env.HTTP_PORT || 8080);
 
+  try {
     if (options.get) {
-        instance.runCmd('curl http://localhost:' + options.argv.original[2] + '/getBlock?index=' + options.argv.original[3]);
+      if (typeof options.index !== "number") {
+        logger.error("Missing --index <number> for --get");
+      }
+      const url = `http://localhost:${port}/block/${options.index}`;
+      logger.log(`[cli] GET ${url}`);
+      const data = await httpJson(url);
+      logger.log(JSON.stringify(data, null, 2));
+      return;
     }
 
     if (options.all) {
-        instance.runCmd('curl http://localhost:' + options.argv.original[2] + '/blocks');
+      const url = `http://localhost:${port}/blocks`;
+      logger.log(`[cli] GET ${url}`);
+      const data = await httpJson(url);
+      logger.log(JSON.stringify(data, null, 2));
+      return;
     }
-};
 
-Block.prototype.runCmd = function(cmd) {
-    const { exec } = require('child_process');
-    logger.log(cmd);
-    exec(cmd, (err, stdout, stderr) => {
-        if (err) {
-            logger.log(`err: ${err}`);
-            return;
-        }
-        logger.log(`stdout: ${stdout}`);
-    });
+    // default help if no option picked
+    logger.log(
+      "usage: cli block --get --index <n> [--port 8080] | --all [--port 8080]"
+    );
+  } catch (err) {
+    logger.error(err.message || String(err));
+  }
 };
 
 exports.Impl = Block;

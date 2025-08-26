@@ -1,46 +1,82 @@
+"use strict";
 
-'use strict';
-
-let logger = require('../logger');
+const logger = require("../logger");
+const { request } = require("undici");
 
 function Wallet(options) {
-    this.options = options;
+  this.options = options;
 }
 
 Wallet.DETAILS = {
-    alias: 'w',
-    description: 'wallet',
-    commands: ['create'],
-    options: {
-        create: Boolean
-    },
-    shorthands: {
-        c: ['--create']
-    },
-    payload: function(payload, options) {
-        options.start = true;
-    },
+  alias: "w",
+  description: "wallet tools",
+  commands: ["create", "show", "state"],
+  options: {
+    create: Boolean, // --create  (init wallet via server if supported)
+    show: Boolean, // --show    (GET /wallet if exposed)
+    state: Boolean, // --state   (GET /state/:address)
+    address: String, // --address <addr>  (for --state)
+    port: Number, // --port <number>
+  },
+  shorthands: {
+    c: ["--create"],
+    s: ["--show"],
+    a: ["--address"],
+    p: ["--port"],
+  },
+  payload: function () {},
 };
 
-Wallet.prototype.run = function() {
-    let instance = this,
-        options = instance.options;
+async function httpJson(url, method = "GET", body) {
+  const res = await request(url, {
+    method,
+    headers: body ? { "content-type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await res.body.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
 
+Wallet.prototype.run = async function () {
+  const options = this.options;
+  const port = Number(options.port || process.env.HTTP_PORT || 8080);
+
+  try {
     if (options.create) {
-        instance.runCmd('curl http://localhost:' + options.argv.original[2] + '/getWallet');
+      // if your API doesn’t expose a create endpoint, you can remove this
+      const url = `http://localhost:${port}/wallet`;
+      const data = await httpJson(url, "POST", {}); // or GET depending on your server
+      logger.log(JSON.stringify(data, null, 2));
+      return;
     }
-};
 
-Wallet.prototype.runCmd = function(cmd) {
-    const { exec } = require('child_process');
-    logger.log(cmd);
-    exec(cmd, (err, stdout, stderr) => {
-        if (err) {
-            logger.log(`err: ${err}`);
-            return;
-        }
-        logger.log(`stdout: ${stdout}`);
-    });
+    if (options.show) {
+      const url = `http://localhost:${port}/wallet`;
+      const data = await httpJson(url);
+      logger.log(JSON.stringify(data, null, 2));
+      return;
+    }
+
+    if (options.state) {
+      if (!options.address) {
+        logger.error("Missing --address <addr> for --state");
+      }
+      const url = `http://localhost:${port}/state/${options.address}`;
+      const data = await httpJson(url);
+      logger.log(JSON.stringify(data, null, 2));
+      return;
+    }
+
+    logger.log(
+      "usage: cli wallet --show [--port 8080] | --state --address <addr> [--port 8080]"
+    );
+  } catch (err) {
+    logger.error(err.message || String(err));
+  }
 };
 
 exports.Impl = Wallet;
