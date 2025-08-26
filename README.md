@@ -1,3 +1,10 @@
+<!-- PROJECT SHIELDS -->
+
+[![GitHub stars](https://img.shields.io/github/stars/ac12644/blockchain-secp-falcon?style=flat)](https://github.com/ac12644/blockchain-secp-falcon/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/ac12644/blockchain-secp-falcon?style=flat)](https://github.com/ac12644/blockchain-secp-falcon/network/members)
+[![GitHub issues](https://img.shields.io/github/issues/ac12644/blockchain-secp-falcon?style=flat)](https://github.com/ac12644/blockchain-secp-falcon/issues)
+[![Tests](https://github.com/ac12644/blockchain-secp-falcon/actions/workflows/tests.yml/badge.svg)](https://github.com/ac12644/blockchain-secp-falcon/actions/workflows/tests.yml)
+
 <!-- PROJECT LOGO -->
 <br />
 <div align="center">
