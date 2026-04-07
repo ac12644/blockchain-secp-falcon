@@ -9,7 +9,7 @@ function genesis() {
   const h = new BlockHeader(
     1,
     "0".repeat(64),
-    "m".repeat(64),
+    "a".repeat(64),
     1700000000,
     0,
     0
@@ -40,7 +40,11 @@ describe("PoS (deterministic selection)", () => {
   test("verification fails if stakes differ", () => {
     const g = genesis();
     const b1 = generatePoSBlock(g, [], 1, 1700000100, stakes);
-    const otherStakes = [{ address: "A", stake: 1 }]; // different set
+    // Use stakes where no single address matches the original validator
+    const otherStakes = [
+      { address: "X", stake: 50 },
+      { address: "Y", stake: 50 },
+    ];
     expect(verifyPoSBlock(b1, g, otherStakes)).toBe(false);
   });
 });

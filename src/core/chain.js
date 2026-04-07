@@ -3,7 +3,19 @@
 const { BlockHeader, Block } = require("./block");
 const { verifyPoWBlock, generatePoWBlock } = require("../consensus/pow");
 const { verifyPoSBlock, generatePoSBlock } = require("../consensus/pos");
-const { buildStateFromChain } = require("./state");
+const {
+  buildStateFromChain,
+  getChainStateSnapshot,
+  invalidateCache,
+} = require("./state");
+const {
+  verifyTransaction,
+  createCoinbaseTx,
+  verifyCoinbaseTx,
+  isCoinbase,
+} = require("../tx/transaction");
+const { getNextNBits } = require("../consensus/difficulty");
+const db = require("../storage/db");
 
 const CONSENSUS_MODE = (process.env.CONSENSUS_MODE || "pow").toLowerCase();
 const FUTURE_SKEW = 2 * 60 * 60; // 2 hours
@@ -18,6 +30,7 @@ const GENESIS = {
   nBits: 0x1f00ffff,
   nonce: 0,
 };
+
 function getGenesisBlock() {
   const h = new BlockHeader(
     GENESIS.version,
@@ -30,7 +43,10 @@ function getGenesisBlock() {
   return new Block(h, 0, []);
 }
 
-let chain = [getGenesisBlock()];
+const chain = [getGenesisBlock()];
+
+// Sequential queue prevents concurrent addBlock race conditions
+let blockQueue = Promise.resolve();
 
 function now() {
   return Math.floor(Date.now() / 1000);
@@ -47,21 +63,29 @@ function getLatestBlock() {
   return chain[chain.length - 1];
 }
 
-async function addBlock(newBlock, stakes = []) {
+async function _addBlock(newBlock, stakes = []) {
   const prev = getLatestBlock();
   if (newBlock.index !== prev.index + 1) return false;
   if (!isTimestampValid(newBlock)) return false;
 
   if (CONSENSUS_MODE === "pow") {
+    const expectedNBits = getNextNBits(chain, GENESIS.nBits);
+    if (newBlock.blockHeader.nBits !== expectedNBits) return false;
     if (!verifyPoWBlock(newBlock, prev)) return false;
   } else {
     if (!verifyPoSBlock(newBlock, prev, stakes)) return false;
   }
 
-  // Recompute and validate all txs against current state
-  const state = buildStateFromChain(chain);
-  for (const tx of newBlock.txns) {
-    const { verifyTransaction } = require("../tx/transaction");
+  // Validate coinbase tx (must be first, exactly one)
+  const txns = newBlock.txns || [];
+  if (txns.length === 0 || !isCoinbase(txns[0])) return false;
+  const regularTxns = txns.slice(1);
+  if (regularTxns.some(isCoinbase)) return false; // only one coinbase allowed
+  if (!verifyCoinbaseTx(txns[0], newBlock.index, regularTxns)) return false;
+
+  // Validate regular txs against cached state (snapshot for safe mutation)
+  const state = getChainStateSnapshot(chain);
+  for (const tx of regularTxns) {
     const ok = await verifyTransaction(tx, state);
     if (!ok) return false;
     const accFrom = state.get(tx.fromAddress) || { balance: 0, nonce: 0 };
@@ -74,6 +98,12 @@ async function addBlock(newBlock, stakes = []) {
   }
 
   chain.push(newBlock);
+
+  // persist to disk if DB is open
+  if (db.isOpen()) {
+    await db.putBlock(newBlock);
+  }
+
   console.log(
     `[chain] accepted block #${newBlock.index} hash=${newBlock.hash.slice(
       0,
@@ -83,43 +113,112 @@ async function addBlock(newBlock, stakes = []) {
   return true;
 }
 
+function addBlock(newBlock, stakes = []) {
+  return (blockQueue = blockQueue
+    .then(() => _addBlock(newBlock, stakes))
+    .catch(() => false));
+}
+
 function isValidChain(candidate, stakes = []) {
   // genesis check (hash equality)
   const g = getGenesisBlock();
-  const sameGenesis = JSON.stringify(candidate[0]) === JSON.stringify(g);
-  if (!sameGenesis) return false;
+  if (candidate[0].hash !== g.hash) return false;
 
+  const state = new Map();
   for (let i = 1; i < candidate.length; i++) {
     const prev = candidate[i - 1];
     const cur = candidate[i];
     if (cur.blockHeader.time <= prev.blockHeader.time) return false;
 
-    if ((process.env.CONSENSUS_MODE || "pow") === "pow") {
+    if (CONSENSUS_MODE === "pow") {
+      const expectedNBits = getNextNBits(candidate, GENESIS.nBits, i);
+      if (cur.blockHeader.nBits !== expectedNBits) return false;
       if (!verifyPoWBlock(cur, prev)) return false;
     } else {
       if (!verifyPoSBlock(cur, prev, stakes)) return false;
+    }
+
+    // validate coinbase
+    const txns = cur.txns || [];
+    if (txns.length === 0 || !isCoinbase(txns[0])) return false;
+    const regularTxns = txns.slice(1);
+    if (regularTxns.some(isCoinbase)) return false;
+    if (!verifyCoinbaseTx(txns[0], cur.index, regularTxns)) return false;
+
+    // credit coinbase reward
+    const coinTo = state.get(txns[0].toAddress) || { balance: 0, nonce: 0 };
+    coinTo.balance += txns[0].amount;
+    state.set(txns[0].toAddress, coinTo);
+
+    // validate regular transactions against accumulated state
+    for (const tx of regularTxns) {
+      if (!verifyTransaction(tx, state)) return false;
+      const from = state.get(tx.fromAddress) || { balance: 0, nonce: 0 };
+      const to = state.get(tx.toAddress) || { balance: 0, nonce: 0 };
+      from.balance -= tx.amount + tx.fee;
+      from.nonce = tx.nonce;
+      to.balance += tx.amount;
+      state.set(tx.fromAddress, from);
+      state.set(tx.toAddress, to);
     }
   }
   return true;
 }
 
-function replaceChain(newChain, stakes = []) {
+async function replaceChain(newChain, stakes = []) {
   if (newChain.length <= chain.length) return false;
   if (!isValidChain(newChain, stakes)) return false;
-  chain = newChain;
+  chain.length = 0;
+  newChain.forEach((b) => chain.push(b));
+  invalidateCache();
+
+  // persist all blocks if DB is open
+  if (db.isOpen()) {
+    for (const b of newChain) {
+      await db.putBlock(b);
+    }
+  }
   return true;
 }
 
+/**
+ * Load persisted chain from DB on startup.
+ * Falls back to genesis-only if DB is empty or not open.
+ */
+async function loadChain() {
+  try {
+    await db.open();
+    const blocks = await db.loadAllBlocks();
+    if (blocks.length > 0) {
+      chain.length = 0;
+      blocks.forEach((b) => chain.push(b));
+      console.log(`[chain] restored ${chain.length} blocks from disk`);
+    } else {
+      // persist genesis
+      await db.putBlock(chain[0]);
+      console.log("[chain] initialized new DB with genesis block");
+    }
+  } catch (err) {
+    console.warn("[chain] DB not available, running in-memory only:", err.message);
+  }
+}
+
 // Block production API
-function generateNextBlock(txns = [], stakes = [], nBits = GENESIS.nBits) {
+function generateNextBlock(txns = [], stakes = [], minerAddress = "") {
   const prev = getLatestBlock();
   const nextIndex = prev.index + 1;
   const nextTime = now();
 
+  // prepend coinbase tx
+  const fees = txns.reduce((sum, t) => sum + (t.fee || 0), 0);
+  const coinbase = createCoinbaseTx(minerAddress, nextIndex, fees);
+  const allTxns = [coinbase, ...txns];
+
   if (CONSENSUS_MODE === "pow") {
-    return generatePoWBlock(prev, txns, nextIndex, nextTime, nBits);
+    const nBits = getNextNBits(chain, GENESIS.nBits);
+    return generatePoWBlock(prev, allTxns, nextIndex, nextTime, nBits);
   }
-  return generatePoSBlock(prev, txns, nextIndex, nextTime, stakes);
+  return generatePoSBlock(prev, allTxns, nextIndex, nextTime, stakes);
 }
 
 module.exports = {
@@ -130,4 +229,5 @@ module.exports = {
   replaceChain,
   isValidChain,
   generateNextBlock,
+  loadChain,
 };

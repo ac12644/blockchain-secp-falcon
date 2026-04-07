@@ -11,7 +11,7 @@ describe("Chain (PoW)", () => {
     const chain = require("../src/core/chain");
     const { generateNextBlock, addBlock, getLatestBlock } = chain;
 
-    const b1 = generateNextBlock([], [], 0x207fffff); // easy
+    const b1 = generateNextBlock([], [], "a".repeat(40)); // uses protocol difficulty
     const ok = await addBlock(b1, []);
     expect(ok).toBe(true);
     expect(getLatestBlock().index).toBe(1);

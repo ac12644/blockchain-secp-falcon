@@ -1,6 +1,6 @@
 // Core block primitives: canonical header, block hash (double-SHA256)
 
-const CryptoJS = require("crypto-js");
+const { createHash } = require("crypto");
 
 class BlockHeader {
   constructor(version, previousHash, merkleRoot, time, nBits, nonce) {
@@ -13,22 +13,24 @@ class BlockHeader {
   }
 }
 
-// Simple, readable “serialization” for learners (use binary in real systems)
+// Binary serialization (80 bytes, Bitcoin-style layout)
 function serializeHeader(h) {
-  return [
-    h.version,
-    h.previousHash,
-    h.merkleRoot,
-    h.time,
-    h.nBits,
-    h.nonce,
-  ].join("|");
+  const buf = Buffer.allocUnsafe(80);
+  buf.writeUInt32BE(h.version, 0);
+  Buffer.from(h.previousHash, "hex").copy(buf, 4);
+  Buffer.from(h.merkleRoot, "hex").copy(buf, 36);
+  buf.writeUInt32BE(h.time, 68);
+  buf.writeUInt32BE(h.nBits, 72);
+  buf.writeUInt32BE(h.nonce, 76);
+  return buf;
 }
 
-// Bitcoin-style double SHA-256 of the header serialization
+// Double SHA-256 of the binary header
 function hashHeader(header) {
   const s = serializeHeader(header);
-  return CryptoJS.SHA256(CryptoJS.SHA256(s)).toString();
+  return createHash("sha256")
+    .update(createHash("sha256").update(s).digest())
+    .digest("hex");
 }
 
 class Block {

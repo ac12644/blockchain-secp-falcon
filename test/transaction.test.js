@@ -37,7 +37,7 @@ describe("Transactions", () => {
 
   test("address must match public key", async () => {
     const { privateKey, publicKey } = await CryptoAdapter.generateKeyPair();
-    const fromAddress = "0".repeat(40); // wrong
+    const fromAddress = "f".repeat(40); // wrong — doesn't derive from publicKey
     const toAddress = "1".repeat(40);
 
     const tx = await signTransferTx({

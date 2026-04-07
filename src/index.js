@@ -2,7 +2,8 @@ require("dotenv").config();
 
 const { startHttpServer } = require("./network/http");
 const { startP2P } = require("./network/p2p");
-const { initWallet } = require("./wallet/wallet");
+const { initWallet } = require("./crypto/keys");
+const { loadChain } = require("./core/chain");
 
 (async () => {
   try {
@@ -15,18 +16,21 @@ const { initWallet } = require("./wallet/wallet");
     console.log("   Crypto Algorithm:", cryptoMode);
     console.log("===========================================");
 
+    await loadChain();
+
     const myWallet = await initWallet();
     console.log("[wallet] address:", myWallet.address);
 
     const stakes = [{ address: myWallet.address, stake: 100 }];
+    const minerAddress = myWallet.address;
 
     // Start P2P first to get broadcaster
-    const p2p = startP2P(stakes);
+    const p2p = startP2P(stakes, minerAddress);
     const preferredPort = process.env.HTTP_PORT
       ? Number(process.env.HTTP_PORT)
       : undefined;
 
-    await startHttpServer(preferredPort, stakes, (type, data) => {
+    await startHttpServer(preferredPort, stakes, minerAddress, (type, data) => {
       // normalise type name for our p2p switch
       if (type === "receiveNewBlock") {
         p2p.broadcast("receiveNewBlock", data);

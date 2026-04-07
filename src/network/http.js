@@ -1,13 +1,18 @@
 const express = require("express");
-const bodyParser = require("body-parser");
-const getPort = require("get-port");
 const {
   chain,
   getLatestBlock,
   addBlock,
   generateNextBlock,
 } = require("../core/chain");
-const { buildStateFromChain } = require("../core/state");
+const { getChainState } = require("../core/state");
+const {
+  addToMempool,
+  selectTransactions,
+  removeConfirmed,
+  size: mempoolSize,
+  getPending,
+} = require("../tx/mempool");
 
 /**
  * Start HTTP server.
@@ -18,10 +23,11 @@ const { buildStateFromChain } = require("../core/state");
 async function startHttpServer(
   preferredPort,
   stakes = [],
+  minerAddress = "",
   broadcast = () => {}
 ) {
   const app = express();
-  app.use(bodyParser.json());
+  app.use(express.json({ limit: "100kb" }));
 
   app.get("/blocks", (req, res) => res.json(chain));
 
@@ -33,17 +39,24 @@ async function startHttpServer(
   });
 
   app.get("/state/:address", (req, res) => {
-    const state = buildStateFromChain(chain);
-    res.json(state.get(req.params.address) || { balance: 0, nonce: 0 });
+    const addr = req.params.address;
+    if (!/^[a-f0-9]{40}$/i.test(addr))
+      return res.status(400).json({ error: "invalid address format" });
+    const state = getChainState(chain);
+    const acct = state.get(addr);
+    res.json(acct ? { ...acct } : { balance: 0, nonce: 0 });
+  });
+
+  app.get("/mempool", (req, res) => {
+    res.json({ size: mempoolSize(), transactions: getPending() });
   });
 
   app.post("/tx", async (req, res) => {
     try {
-      const tx = req.body;
-      const block = generateNextBlock([tx], stakes);
-      const ok = await addBlock(block, stakes);
-      if (ok) broadcast("receiveNewBlock", block);
-      return res.json({ ok, block });
+      const result = await addToMempool(req.body, chain);
+      if (!result.ok)
+        return res.status(400).json({ ok: false, error: result.error });
+      return res.json({ ok: true, hash: result.hash, queued: mempoolSize() });
     } catch (e) {
       return res
         .status(400)
@@ -51,14 +64,13 @@ async function startHttpServer(
     }
   });
 
-  // 👉 new: force-mine an empty block (uses very easy nBits when in PoW)
   app.post("/mine", async (req, res) => {
     try {
-      // when in PoW, pass an easy compact target so it solves instantly
-      const EASY_NBITS = 0x207fffff;
-      const block = generateNextBlock([], stakes, EASY_NBITS);
+      const txns = selectTransactions();
+      const block = generateNextBlock(txns, stakes, minerAddress);
       const ok = await addBlock(block, stakes);
       if (ok) {
+        removeConfirmed(block.txns);
         broadcast("receiveNewBlock", block);
         return res.json({ ok: true, mined: true, block });
       }
@@ -72,8 +84,9 @@ async function startHttpServer(
 
   app.get("/latest", (req, res) => res.json(getLatestBlock()));
 
+  const { default: getPort, portNumbers } = await import("get-port");
   const port = await getPort({
-    port: preferredPort ? Number(preferredPort) : getPort.makeRange(8080, 8999),
+    port: preferredPort ? Number(preferredPort) : portNumbers(8080, 8999),
   });
 
   await new Promise((resolve) => {

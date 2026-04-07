@@ -1,7 +1,7 @@
 // Simple Merkle tree over JSON(tx) hashes (SHA-256)
 
-const CryptoJS = require("crypto-js");
-const sha = (x) => CryptoJS.SHA256(x).toString();
+const { createHash } = require("crypto");
+const sha = (x) => createHash("sha256").update(x).digest("hex");
 
 function merkleRoot(txns) {
   if (!txns || txns.length === 0) return "0".repeat(64);

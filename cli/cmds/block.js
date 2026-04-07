@@ -1,78 +1,36 @@
 "use strict";
 
-const logger = require("../logger");
-const nopt = require("nopt");
+const { httpGet } = require("../http");
 
-// use undici (fast native) or node-fetch if you prefer
-const { request } = require("undici");
+exports.alias = "b";
+exports.description = "Query blocks from running node";
 
-function Block(options) {
-  this.options = options;
-}
+exports.run = async function (opts) {
+  const base = `http://localhost:${opts.port}`;
 
-Block.DETAILS = {
-  alias: "b",
-  description: "block operations",
-  commands: ["get", "all"],
-  options: {
-    get: Boolean, // --get
-    all: Boolean, // --all
-    port: Number, // --port <number>
-    index: Number, // --index <number>
-  },
-  shorthands: {
-    g: ["--get"],
-    a: ["--all"],
-    p: ["--port"],
-    i: ["--index"],
-  },
-  payload: function (payload, options) {
-    // allow: cli block --get --index 1 --port 8080
-    // no positional hacks
-  },
-};
-
-async function httpJson(url) {
-  const res = await request(url, { method: "GET" });
-  const text = await res.body.text();
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
+  if (opts.latest) {
+    const data = await httpGet(`${base}/latest`);
+    console.log(JSON.stringify(data, null, 2));
+    return;
   }
-}
 
-Block.prototype.run = async function () {
-  const options = this.options;
-  const port = Number(options.port || process.env.HTTP_PORT || 8080);
-
-  try {
-    if (options.get) {
-      if (typeof options.index !== "number") {
-        logger.error("Missing --index <number> for --get");
-      }
-      const url = `http://localhost:${port}/block/${options.index}`;
-      logger.log(`[cli] GET ${url}`);
-      const data = await httpJson(url);
-      logger.log(JSON.stringify(data, null, 2));
-      return;
-    }
-
-    if (options.all) {
-      const url = `http://localhost:${port}/blocks`;
-      logger.log(`[cli] GET ${url}`);
-      const data = await httpJson(url);
-      logger.log(JSON.stringify(data, null, 2));
-      return;
-    }
-
-    // default help if no option picked
-    logger.log(
-      "usage: cli block --get --index <n> [--port 8080] | --all [--port 8080]"
-    );
-  } catch (err) {
-    logger.error(err.message || String(err));
+  if (opts.index !== undefined) {
+    const data = await httpGet(`${base}/block/${opts.index}`);
+    console.log(JSON.stringify(data, null, 2));
+    return;
   }
-};
 
-exports.Impl = Block;
+  if (opts.all) {
+    const data = await httpGet(`${base}/blocks`);
+    console.log(JSON.stringify(data, null, 2));
+    return;
+  }
+
+  console.log(
+    "Usage: cli block [options]\n\n" +
+      "  --index <n>   Get block by index\n" +
+      "  --latest      Get latest block\n" +
+      "  --all         Get entire chain\n" +
+      "  --port <n>    Node port (default: 8080)"
+  );
+};

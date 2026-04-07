@@ -1,22 +1,14 @@
+"use strict";
 
-'use strict';
+const path = require("path");
+const fs = require("fs");
 
-let base = require('../base'),
-    logger = require('../logger');
+exports.alias = "v";
+exports.description = "Show version";
 
-function Version() {}
-
-Version.DETAILS = {
-    alias: 'v',
-    description: 'Version.',
+exports.run = function () {
+  const pkg = JSON.parse(
+    fs.readFileSync(path.join(__dirname, "../../package.json"), "utf8")
+  );
+  console.log(`${pkg.name} v${pkg.version}`);
 };
-
-Version.prototype.run = function() {
-    base.asyncReadPackages(this.printVersion)
-};
-
-Version.prototype.printVersion = function(pkg) {
-    logger.log(pkg.name + ' ' + pkg.version)
-};
-
-exports.Impl = Version;

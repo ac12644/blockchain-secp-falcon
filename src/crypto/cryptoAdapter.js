@@ -1,10 +1,15 @@
-// Pluggable crypto: secp256k1 (default) and Falcon-512 (optional via pqclean)
+// Pluggable crypto: secp256k1 via Node built-in crypto (default) and Falcon-512 (optional via pqclean)
 
-const { createHash } = require("crypto");
-const EC = require("elliptic").ec;
-const ec = new EC("secp256k1");
+const { createHash, generateKeyPairSync, sign, verify, createPublicKey, createPrivateKey } = require("crypto");
 
-const CRYPTO_MODE = process.env.CRYPTO_MODE || "secp256k1";
+const SUPPORTED = ["secp256k1", "falcon"];
+const CRYPTO_MODE = (process.env.CRYPTO_MODE || "secp256k1").toLowerCase();
+
+// Validate on load — fail fast on typos
+if (!SUPPORTED.includes(CRYPTO_MODE)) {
+  console.error(`[crypto] Invalid CRYPTO_MODE="${CRYPTO_MODE}". Must be one of: ${SUPPORTED.join(", ")}`);
+  process.exit(1);
+}
 
 let pqclean;
 try {
@@ -13,12 +18,16 @@ try {
   pqclean = null;
 }
 
+if (CRYPTO_MODE === "falcon" && !pqclean) {
+  console.error('[crypto] CRYPTO_MODE=falcon requires "pqclean" package. Install with: npm install pqclean');
+  process.exit(1);
+}
+
 function sha256(buf) {
   return createHash("sha256").update(buf).digest();
 }
 
 function getAddress(publicKey) {
-  // Support Buffer/Uint8Array or hex string
   const buf = Buffer.isBuffer(publicKey)
     ? publicKey
     : typeof publicKey === "string"
@@ -29,45 +38,64 @@ function getAddress(publicKey) {
 
 async function generateKeyPair() {
   if (CRYPTO_MODE === "falcon") {
-    if (!pqclean) throw new Error("pqclean not installed");
-    const { sign } = pqclean;
-    const kp = await sign.generateKeyPair("falcon-512");
+    const { sign: falconSign } = pqclean;
+    const kp = await falconSign.generateKeyPair("falcon-512");
     return {
       privateKey: Buffer.from(kp.privateKey.export()),
       publicKey: Buffer.from(kp.publicKey.export()),
     };
   }
-  const key = ec.genKeyPair();
+
+  const { privateKey, publicKey } = generateKeyPairSync("ec", {
+    namedCurve: "secp256k1",
+    publicKeyEncoding: { type: "spki", format: "der" },
+    privateKeyEncoding: { type: "pkcs8", format: "der" },
+  });
+
   return {
-    privateKey: Buffer.from(key.getPrivate("hex"), "hex"),
-    publicKey: Buffer.from(key.getPublic("hex"), "hex"),
+    privateKey: Buffer.from(privateKey),
+    publicKey: Buffer.from(publicKey),
   };
 }
 
-async function sign(message, privateKey) {
+async function signMessage(message, privateKey) {
   if (CRYPTO_MODE === "falcon") {
-    const { sign } = pqclean || {};
-    const sk = new sign.PrivateKey("falcon-512", Buffer.from(privateKey));
+    const { sign: falconSign } = pqclean;
+    const sk = new falconSign.PrivateKey("falcon-512", Buffer.from(privateKey));
     const sig = await sk.sign(Buffer.from(message, "utf8"));
     return Buffer.from(sig).toString("hex");
   }
-  const key = ec.keyFromPrivate(Buffer.from(privateKey).toString("hex"), "hex");
-  const msgHash = sha256(Buffer.from(message, "utf8"));
-  return key.sign(msgHash).toDER("hex");
+
+  const keyObj = createPrivateKey({
+    key: Buffer.from(privateKey),
+    format: "der",
+    type: "pkcs8",
+  });
+
+  const msgBuf = Buffer.from(message, "utf8");
+  const sig = sign("sha256", msgBuf, keyObj);
+  return sig.toString("hex");
 }
 
-async function verify(message, signatureHex, publicKey) {
+async function verifyMessage(message, signatureHex, publicKey) {
   if (CRYPTO_MODE === "falcon") {
-    const { sign } = pqclean || {};
-    const pk = new sign.PublicKey("falcon-512", Buffer.from(publicKey));
+    const { sign: falconSign } = pqclean;
+    const pk = new falconSign.PublicKey("falcon-512", Buffer.from(publicKey));
     return pk.verify(
       Buffer.from(message, "utf8"),
       Buffer.from(signatureHex, "hex")
     );
   }
-  const key = ec.keyFromPublic(Buffer.from(publicKey).toString("hex"), "hex");
-  const msgHash = sha256(Buffer.from(message, "utf8"));
-  return key.verify(msgHash, signatureHex);
+
+  const keyObj = createPublicKey({
+    key: Buffer.from(publicKey),
+    format: "der",
+    type: "spki",
+  });
+
+  const msgBuf = Buffer.from(message, "utf8");
+  const sigBuf = Buffer.from(signatureHex, "hex");
+  return verify("sha256", msgBuf, keyObj, sigBuf);
 }
 
-module.exports = { generateKeyPair, getAddress, sign, verify };
+module.exports = { generateKeyPair, getAddress, sign: signMessage, verify: verifyMessage, CRYPTO_MODE };
